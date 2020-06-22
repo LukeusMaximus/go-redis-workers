@@ -4,6 +4,8 @@ import (
     "context"
     "fmt"
     "github.com/go-redis/redis/v8"
+    "runtime"
+    "sync"
 )
 
 var ctx = context.Background()
@@ -47,6 +49,7 @@ func createWork(rdb *redis.Client, ctx context.Context, numItems int) {
         }
     }
 
+    // Report number entries we actually made
     var length int64 = 0
     length, err = rdb.LLen(ctx, workListKey).Result()
     if err != nil {
@@ -56,16 +59,46 @@ func createWork(rdb *redis.Client, ctx context.Context, numItems int) {
     }
 }
 
-func worker() {
+// Each worker works until the list of work to do is empty.
+// Redis fulfils all interprocess communication needs.
+func worker(ctx context.Context, workerId int) {
+    // Each worker can have its own database connection
+    rdb := connectToDB()
+    isAlive := true
 
+    for isAlive {
+        result, err := rdb.LPop(ctx, workListKey).Result()
+        fmt.Println("result", result, "error", err)
+        if err != nil {
+            if err.Error() == "redis: nil" {
+                fmt.Printf("Worker %d couldn't find any more work.\n", workerId)
+                break
+            } else {
+                fmt.Printf("Worker %d couldn't get an item from the work list.\n", workerId)
+                break
+            }
+        }
+    }
 }
 
-func spawnWorkers() {
-    for 
+func spawnWorkers(ctx context.Context) {
+    numWorkers := runtime.GOMAXPROCS(0) - 1
+    var wg sync.WaitGroup
+
+    fmt.Printf("Spawning %d workers.\n", numWorkers)
+    for i := 0; i < numWorkers; i++ {
+        wg.Add(1)
+        go func(id int) {
+            defer wg.Done()
+            worker(ctx, id)
+        }(i)
+    }
+    wg.Wait()
 }
 
 func main() {
     rdb := connectToDB()
     createWork(rdb, ctx, 100)
+    spawnWorkers(ctx)
 }
 
