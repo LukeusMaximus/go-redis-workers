@@ -13,10 +13,23 @@ var workListKey = "work-item-list"
 
 func connectToDB() *redis.Client {
     rdb := redis.NewClient(&redis.Options{
-        Addr: "localhost:6379",
+        Addr: "redis:6379",
         Password: "",
         DB: 0,
     })
+
+    connectionAttempts := 0
+    for {
+        pong, err := rdb.Ping(ctx).Result()
+        if err == nil {
+            fmt.Printf("Pong received: %s\n", pong)
+            break
+        } else {
+            connectionAttempts++
+            fmt.Printf("Connection attempt %d to redis failed, retrying...\n", connectionAttempts)
+        }
+    }
+
     return rdb
 }
 

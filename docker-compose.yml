@@ -1,5 +1,8 @@
+version: "3.8"
 services:
-  #work-server:
+  work-server:
+    build: .
+    image: go-redis-workers
   redis:
     image: redis:latest
    
