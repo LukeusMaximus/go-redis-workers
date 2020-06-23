@@ -5,7 +5,9 @@ import (
     "fmt"
     "github.com/go-redis/redis/v8"
     "runtime"
+    "strconv"
     "sync"
+    "time"
 )
 
 var ctx = context.Background()
@@ -80,8 +82,7 @@ func worker(ctx context.Context, workerId int) {
     isAlive := true
 
     for isAlive {
-        result, err := rdb.LPop(ctx, workListKey).Result()
-        fmt.Println("result", result, "error", err)
+        workItemId, err := rdb.LPop(ctx, workListKey).Result()
         if err != nil {
             if err.Error() == "redis: nil" {
                 fmt.Printf("Worker %d couldn't find any more work.\n", workerId)
@@ -90,6 +91,27 @@ func worker(ctx context.Context, workerId int) {
                 fmt.Printf("Worker %d couldn't get an item from the work list.\n", workerId)
                 break
             }
+        }
+
+        workItem, err := rdb.HGetAll(ctx, workItemId).Result()
+        if err != nil {
+            if err.Error() == "redis: nil" {
+                fmt.Printf("No work item found with Id \"%s\"\n", workItemId)
+            } else {
+                fmt.Printf("Worker %d couldn't retrieve a work item.")
+                // TODO What should be done with popped work item value?
+                // Can't assume we can push back on the list as there was an issue communicating with the DB.
+                // Can't just drop item either as work would not get done.
+            }
+        }
+
+        if workItem["function"] == "sleep" {
+            duration, _ := strconv.Atoi(workItem["duration"])
+            fmt.Printf("Worker %d performing sleep for %dms\n", workerId, duration)
+            millis, _ := time.ParseDuration(strconv.Itoa(duration) + "ms")
+            time.Sleep(millis)
+        } else {
+            fmt.Printf("Worker %d encountered unknown work function \"%s\"\n", workItem["function"])
         }
     }
 }
