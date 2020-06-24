@@ -1,0 +1,3 @@
+# Running #
+
+docker-compose up
