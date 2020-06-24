@@ -12,6 +12,8 @@ import (
 
 var ctx = context.Background()
 var workListKey = "work-item-list"
+var completedWorkChannel = "completed-work"
+var finishedWorkersChannel = "finished-workers"
 
 func connectToDB() *redis.Client {
     rdb := redis.NewClient(&redis.Options{
@@ -29,6 +31,7 @@ func connectToDB() *redis.Client {
         } else {
             connectionAttempts++
             fmt.Printf("Connection attempt %d to redis failed, retrying...\n", connectionAttempts)
+            time.Sleep(time.Second)
         }
     }
 
@@ -74,14 +77,17 @@ func createWork(rdb *redis.Client, ctx context.Context, numItems int) {
     }
 }
 
+
+
 // Each worker works until the list of work to do is empty.
 // Redis fulfils all interprocess communication needs.
-func worker(ctx context.Context, workerId int) {
+func worker(ctx context.Context, workerId int, wg *sync.WaitGroup) {
+    defer wg.Done()
+
     // Each worker can have its own database connection
     rdb := connectToDB()
-    isAlive := true
 
-    for isAlive {
+    for {
         workItemId, err := rdb.LPop(ctx, workListKey).Result()
         if err != nil {
             if err.Error() == "redis: nil" {
@@ -110,9 +116,45 @@ func worker(ctx context.Context, workerId int) {
             fmt.Printf("Worker %d performing sleep for %dms\n", workerId, duration)
             millis, _ := time.ParseDuration(strconv.Itoa(duration) + "ms")
             time.Sleep(millis)
+
+            err = rdb.Publish(ctx, completedWorkChannel, workItemId).Err()
+            if err != nil {
+                fmt.Printf("Worker %d couldn't publish completed work item %s.\n", workerId, workItemId)
+            }
         } else {
             fmt.Printf("Worker %d encountered unknown work function \"%s\"\n", workItem["function"])
         }
+    }
+
+    // Declare that the worker has finished
+    err := rdb.Publish(ctx, finishedWorkersChannel, workerId).Err()
+    if err != nil {
+        fmt.Printf("Worker %d couldn't publish finish message.\n", workerId)
+    }
+}
+
+func listenerWorker(ctx context.Context, numWorkers int, wg *sync.WaitGroup) {
+    defer wg.Done()
+
+    rdb := connectToDB()
+    //completedWorkClient := rdb.Subscribe(ctx, completedWorkChannel)
+    //completedWorkChannel := completedWorkClient.Channel()
+    finishedWorkersClient := rdb.Subscribe(ctx, finishedWorkersChannel)
+    finishedWorkersChannel := finishedWorkersClient.Channel()
+
+    finishedWorkersCount := 0
+
+    for finishedWorkersCount < numWorkers {
+        select {
+        case fw := <-finishedWorkersChannel:
+            finishedWorkersCount++
+            fmt.Printf("Received finished message from worker %s. %d/%d workers finished\n", fw.Payload, finishedWorkersCount, numWorkers)
+        }
+    }
+
+    err := finishedWorkersClient.Close()
+    if err != nil {
+        fmt.Printf("Listener worker couldn't close subscription properly.\n")
     }
 }
 
@@ -123,12 +165,14 @@ func spawnWorkers(ctx context.Context) {
     fmt.Printf("Spawning %d workers.\n", numWorkers)
     for i := 0; i < numWorkers; i++ {
         wg.Add(1)
-        go func(id int) {
-            defer wg.Done()
-            worker(ctx, id)
-        }(i)
+        go worker(ctx, i, &wg)
     }
+
+    wg.Add(1)
+    go listenerWorker(ctx, numWorkers, &wg)
+
     wg.Wait()
+    fmt.Printf("All workers finished.\n")
 }
 
 func main() {
